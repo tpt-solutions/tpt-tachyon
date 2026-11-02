@@ -1,0 +1,1151 @@
+tpt-tachyon Design Spec
+Project: tpt-tachyon
+Version: Draft v0.1
+Date: Tuesday, 3 November 2026
+Status: Research / architecture proposal
+Codename meaning: Tachyon is an aspirational name for ultra-low-latency transport. It does not imply faster-than-light communication.
+1. One-Line Summary
+tpt-tachyon is a deterministic, short-range, high-bandwidth wireless interconnect designed to make wireless devices behave like local hardware endpoints rather than network peers.
+The goal is to build a wireless fabric that can eventually support things like:
+wireless GPU / accelerator docks;
+wireless storage-class devices;
+wireless FPGA / ASIC compute modules;
+wireless high-speed sensor streams;
+experimental memory-extension or CXL-like devices.
+The first practical target is not wireless DDR RAM. That is too latency-sensitive. The first target is a wireless PCIe-like accelerator fabric.
+2. Core Thesis
+Modern Wi-Fi is designed around this assumption:
+“Many devices share unreliable spectrum and send general network packets.”
+Tachyon is designed around a different assumption:
+“Two or more known devices are very close together, use highly directional links, and exchange formally-defined hardware transactions.”
+That changes everything.
+Instead of optimizing for general internet traffic, Tachyon optimizes for:
+fixed transaction formats;
+predictable scheduling;
+minimal packet parsing;
+hardware-level flow control;
+lane bonding across frequencies / beams;
+bounded retry windows;
+direct DMA-style movement;
+optional PCIe / CXL-like host integration.
+3. Goals
+3.1 Primary Goals
+Lower latency than 802.11ay-style wireless networking.
+Avoid the normal OS network stack on the fast path.
+Support deterministic timing using scheduled slots, not contention-based access.
+Support parallel wireless lanes using multiple frequencies, beams, polarizations, or spatial paths.
+Expose a hardware-like transaction model to the host.
+Allow formal specification of every fast-path transaction.
+Support simulation before physical RF hardware exists.
+3.2 Secondary Goals
+Support multiple device classes:
+accelerator;
+storage;
+display;
+sensor;
+memory-extension experimental profile.
+Support degraded modes:
+low-latency unreliable mode;
+reliable bounded-retry mode;
+high-reliability FEC mode;
+safe fallback mode.
+Support link telemetry:
+latency;
+jitter;
+BER;
+packet loss;
+lane skew;
+retry rate;
+thermal state;
+beam quality.
+4. Non-Goals
+These are explicitly out of scope for early versions.
+4.1 Not a General Wi-Fi Replacement
+Tachyon is not meant to replace home Wi-Fi for phones, laptops, browsers, video calls, etc.
+802.11be / 802.11ay are general-purpose wireless LAN technologies.
+Tachyon is a short-range hardware interconnect.
+4.2 Not True Wireless CPU RAM
+Wireless system RAM is not a v1 goal.
+CPU-to-DRAM access expects nanosecond-scale latency and extremely deterministic behavior. Tachyon can explore memory-extension semantics later, but early versions should target accelerator/storage-style workloads.
+4.3 Not Faster Than Light
+The project name is symbolic. Propagation still obeys physics.
+The real optimization target is:
+reduce everything around propagation: MAC delay, serialization overhead, retransmission policy, parsing, buffering, scheduling, and OS overhead.
+5. Target Use Cases
+Tier 1: Wireless Accelerator Dock
+Example:
+Laptop / workstation
+    |
+    | Tachyon link
+    |
+External GPU / AI accelerator / FPGA box
+
+This is the most realistic first product direction.
+Workloads:
+AI inference;
+batched GPU compute;
+video processing;
+rendering;
+FPGA offload;
+local model serving.
+Latency tolerance: microseconds to milliseconds depending on workload.
+Tier 2: Wireless Storage-Class Device
+Example:
+
+Host machine
+    |
+    | Tachyon link
+    |
+Remote NVMe-like storage module
+
+This is more feasible than wireless RAM because storage already tolerates higher latency.
+Workloads:
+model weight loading;
+dataset streaming;
+cache expansion;
+external scratch disk.
+Tier 3: Wireless Display / Sensor Fabric
+High-bandwidth, low-jitter streams:
+cameras;
+lidar;
+industrial sensors;
+robotics modules;
+AR/VR displays.
+Tier 4: Experimental Memory Extension
+Long-term research only.
+Possible model:
+not direct DDR;
+not L1/L2/L3 cache replacement;
+more like remote memory over a CXL-inspired protocol;
+page-granularity or object-granularity access;
+prefetch-heavy;
+explicit software/runtime awareness.
+6. Performance Targets
+These are staged targets, not promises.
+Stage
+Medium
+Target Latency
+Target Throughput
+Notes
+T0
+Simulator
+Configurable
+Configurable
+Formal model and emulator
+T1
+Existing 60 GHz / Ethernet-like prototype
+20–250 µs
+1–20 Gbps
+Prove protocol and scheduling
+T2
+FPGA + custom MAC
+2–20 µs
+10–100 Gbps
+Deterministic link layer
+T3
+Custom PHY / sub-THz / optical
+0.5–5 µs
+100 Gbps+
+Research hardware
+T4
+On-package / near-field interconnect
+10–500 ns
+Variable
+Chiplet/package-scale only
+Important distinction:
+Microsecond wireless fabric: plausible research/product direction.
+Nanosecond wireless RAM replacement: only plausible at extremely tiny distances, likely inside package/chiplet environments.
+7. Design Principles
+7.1 Fixed Contracts, Not Dynamic Packets
+Normal networking carries self-describing packets that must be parsed and validated at many layers.
+Tachyon should negotiate transaction schemas up front.
+Fast-path cells should be:
+fixed-size or bounded-size;
+binary;
+versioned;
+predeclared;
+hardware-parseable;
+minimally branching.
+No JSON.
+No protobuf on the fast path.
+No dynamic discovery inside the hot loop.
+7.2 Deterministic by Default
+Tachyon should not use Wi-Fi-style contention access in deterministic mode.
+Instead of:
+
+listen -> wait -> contend -> transmit -> maybe collide -> back off
+
+Use:
+
+clock -> assigned slot -> transmit -> bounded ack / retry
+
+7.3 Hardware-Like Semantics
+The link should carry transactions like:
+read request;
+read completion;
+posted write;
+stream cell;
+fence;
+credit update;
+atomic operation, later;
+DMA descriptor.
+Not arbitrary IP packets.
+7.4 Cut Through, Do Not Buffer Whole Messages
+Where possible, Tachyon should use cut-through forwarding:
+
+receive header -> validate minimal fields -> start forwarding payload
+
+Rather than:
+receive full packet -> validate whole packet -> parse -> copy -> forward
+
+7.5 Reliability Is a Mode, Not a Religion
+Different data types need different reliability.
+For example:
+Data Type
+Reliability Need
+control messages
+very high
+memory read completion
+very high
+AI tensor stream
+sometimes loss-tolerant
+video frame
+can drop frame
+telemetry
+can be lossy
+firmware update
+must be exact
+Tachyon should allow reliability to be selected per virtual channel.
+8. High-Level Architecture
+
++------------------------------------------------------+
+|                    Host System                       |
+|                                                      |
+|  +----------------+       +------------------------+ |
+|  | User Runtime   |       | Kernel / Driver Layer  | |
+|  | tachyond       |       | Tachyon PCIe/DMA shim  | |
+|  +----------------+       +------------------------+ |
+|             \                    /                   |
+|              \                  /                    |
+|          +--------------------------+                |
+|          | Tachyon Fabric Adapter   |                |
+|          +--------------------------+                |
+|                       |                              |
+|          +--------------------------+                |
+|          | Tachyon Link Controller  |                |
+|          +--------------------------+                |
+|                       |                              |
+|          +--------------------------+                |
+|          | Tachyon PHY / Radio      |                |
+|          +--------------------------+                |
++-----------------------|------------------------------+
+                        |
+              deterministic wireless link
+                        |
++-----------------------|------------------------------+
+|          +--------------------------+                |
+|          | Tachyon PHY / Radio      |                |
+|          +--------------------------+                |
+|                       |                              |
+|          +--------------------------+                |
+|          | Tachyon Link Controller  |                |
+|          +--------------------------+                |
+|                       |                              |
+|          +--------------------------+                |
+|          | Device Adapter           |                |
+|          +--------------------------+                |
+|                       |                              |
+|       GPU / FPGA / NVMe / sensor / memory device      |
++------------------------------------------------------+
+
+9. Protocol Stack
+Tachyon should have fewer layers than normal networking.
+
++--------------------------------------------------+
+| Device Profile Layer                             |
+| accelerator / storage / stream / memory-ext      |
++--------------------------------------------------+
+| Transaction Layer                                |
+| read / write / DMA / stream / fence / credit     |
++--------------------------------------------------+
+| Deterministic Link Layer                         |
+| slots / lanes / retry / ordering / flow control  |
++--------------------------------------------------+
+| Physical Abstraction Layer                       |
+| 60 GHz / sub-THz / optical / simulator           |
++--------------------------------------------------+
+
+9.1 PHY Abstraction Layer
+The protocol should not assume one radio technology forever.
+Supported PHY profiles:
+Profile
+Description
+sim
+Software simulator
+eth-bridge
+Early prototype over wired Ethernet
+60ghz
+802.11ay-like or custom 60 GHz radio
+subthz
+Experimental 100–300 GHz link
+optical
+Free-space optical / Li-Fi-like link
+nearfield
+Very short-range package/board link
+9.2 Deterministic Link Layer
+Responsible for:
+time slots;
+lane bonding;
+sequence numbers;
+retry windows;
+CRC;
+optional FEC;
+flow control;
+link training;
+clock synchronization;
+ordered delivery.
+9.3 Transaction Layer
+Responsible for hardware-like operations:
+memory-mapped reads;
+memory-mapped writes;
+DMA transfers;
+stream transport;
+fences;
+doorbells;
+interrupts;
+credits;
+capability-specific messages.
+9.4 Device Profile Layer
+Defines what kind of device is attached.
+Initial profiles:
+tachyon-stream
+tachyon-dma
+tachyon-accel
+tachyon-storage
+tachyon-memext, experimental
+10. Physical Layer Strategy
+10.1 Directional Links
+Tachyon should prefer narrow directional beams over omnidirectional broadcast.
+Benefits:
+higher signal-to-noise ratio;
+less interference;
+more spatial reuse;
+better security;
+more predictable latency;
+lower retransmission rate.
+10.2 Short Range
+Initial target distances:
+Mode
+Distance
+package mode
+millimeters to centimeters
+dock mode
+1 cm to 50 cm
+desk mode
+50 cm to 2 m
+room mode
+best-effort, not deterministic
+Tachyon should be honest: the further away the devices are, the less cable-like the link becomes.
+10.3 Frequency Bands
+Possible bands:
+60 GHz
+practical early candidate;
+existing ecosystem;
+directional;
+short range.
+100–300 GHz
+research candidate;
+huge bandwidth potential;
+difficult RF hardware;
+line-of-sight sensitive.
+Optical / infrared
+very high bandwidth;
+low propagation delay;
+line-of-sight required;
+alignment challenges.
+Near-field / capacitive / inductive
+useful for ultra-short distances;
+possibly better for docked devices.
+11. Parallelism Model
+Tachyon should treat wireless capacity as a set of bonded lanes.
+A lane may be:
+one frequency channel;
+one spatial beam;
+one polarization;
+one optical path;
+one antenna stream;
+one time-interleaved channel.
+
+Logical Tachyon Link
+    |
+    +-- Lane 0: frequency A / beam A
+    +-- Lane 1: frequency B / beam B
+    +-- Lane 2: frequency C / beam C
+    +-- Lane 3: optical path
+
+11.1 Lane Bonding
+The link layer stripes fixed-size cells across lanes.
+Example:
+
+Cell 0 -> Lane 0
+Cell 1 -> Lane 1
+Cell 2 -> Lane 2
+Cell 3 -> Lane 3
+Cell 4 -> Lane 0
+
+11.2 Skew Management
+Different lanes may have different delays.
+Tachyon must track:
+per-lane latency;
+per-lane jitter;
+per-lane error rate;
+per-lane reorder distance.
+The receiver maintains a bounded reorder window.
+If a lane becomes too slow, it is temporarily removed from the active set.
+11.3 Control Duplication
+Critical control cells should be duplicated across multiple lanes when reliability matters.
+For example:
+link reset;
+clock correction;
+credit restore;
+safety stop;
+device detach.
+11.4 Adaptive Lane Mask
+The link maintains an active lane mask:
+
+active_lanes = 0b00001111
+
+If lane 2 degrades:
+
+active_lanes = 0b00001011
+
+This allows graceful degradation instead of full link failure.
+12. Cell Format
+Tachyon should use small fixed or bounded binary cells.
+Initial proposed cell sizes:
+64 bytes;
+128 bytes;
+256 bytes;
+512 bytes;
+optional jumbo payload mode later.
+12.1 Conceptual Cell Header
+
+Tachyon Cell Header
+-------------------
+version          u8
+cell_type        u8
+opcode           u16
+header_len       u16
+payload_len      u16
+virtual_channel  u16
+sequence         u32
+transaction_id   u64
+address_or_tag   u64
+flags            u32
+header_crc       u32
+
+Payload follows.
+A full payload CRC may be optional depending on reliability mode.
+12.2 Design Intent
+The header should be:
+small;
+fixed-layout;
+cheap to parse in hardware;
+resistant to ambiguity;
+easy to validate formally.
+12.3 Important Rule
+Fast-path cells must not require arbitrary schema negotiation.
+All allowed formats are negotiated during session setup.
+13. Transaction Types
+Initial opcodes:
+Opcode
+Purpose
+PING
+link liveness
+TRAIN
+beam/lane training
+CREDIT
+flow-control update
+READ_REQ
+request data from remote address/tag
+READ_CPL
+read completion
+WRITE_POSTED
+write without completion
+WRITE_NONPOSTED
+write requiring completion
+WRITE_CPL
+write completion
+DMA_DESC
+DMA descriptor
+STREAM
+stream payload
+FENCE
+ordering barrier
+DOORBELL
+notify remote device
+INTERRUPT
+signal host/device event
+RESET
+reset channel/device
+ERROR
+error notification
+Later:
+Opcode
+Purpose
+ATOMIC_CAS
+compare-and-swap
+ATOMIC_ADD
+atomic add
+PREFETCH
+predictive fetch
+CACHE_HINT
+cache residency hint
+MEM_PAGE_REQ
+page-granularity memory extension
+14. Reliability Modes
+Tachyon should not pretend all traffic needs the same protection.
+R0 — Raw Stream
+no retry;
+minimal CRC;
+lowest latency;
+suitable for lossy video/sensor/AI streams.
+R1 — Detect and Drop
+CRC required;
+corrupted cells dropped;
+no retransmission;
+suitable for realtime streams.
+R2 — Bounded Retry
+CRC required;
+retry allowed only within fixed window;
+if deadline expires, report error;
+suitable for accelerator traffic.
+R3 — Reliable Ordered
+CRC required;
+retry required;
+ordered delivery required;
+suitable for storage/control/DMA.
+R4 — Protected Control
+duplicated cells;
+strong CRC;
+optional FEC;
+strict sequence checking;
+suitable for critical control traffic.
+14.1 Can Verification Be Removed?
+Not completely.
+But we can reduce it dramatically.
+Tachyon should move from:
+
+dynamic parse + software validation + layered checksums + retransmission stack
+
+to:
+
+pre-negotiated binary schema + hardware CRC + bounded retry + formal state machine
+
+So the answer is:
+We do not remove correctness. We remove unnecessary runtime interpretation.
+15. Deterministic MAC
+Tachyon’s deterministic mode should use scheduled time slots.
+15.1 Superframe
+A superframe contains:
+sync region;
+control region;
+scheduled uplink cells;
+scheduled downlink cells;
+training region;
+retry region;
+telemetry region.
+Example:
+
+| sync | control | downlink | uplink | retry | train | telemetry |
+
+15.2 No Contention in Deterministic Mode
+In deterministic mode, devices do not randomly contend for the medium.
+The controller assigns slots.
+
+slot 0: host -> device A
+slot 1: device A -> host
+slot 2: host -> device B
+slot 3: device B -> host
+
+15.3 Clock Synchronization
+The link requires a shared notion of time.
+Possible mechanisms:
+master clock from host-side adapter;
+hardware timestamping;
+periodic sync cells;
+drift estimation;
+guard bands between slots.
+15.4 Bounded Latency
+Tachyon should define latency as:
+
+total_latency =
+    queue_wait
+  + slot_wait
+  + serialization_time
+  + propagation_time
+  + phy_processing
+  + mac_processing
+  + retry_delay
+  + reorder_delay
+
+Each component must be measurable.
+16. Flow Control
+Tachyon uses credit-based flow control.
+Each virtual channel has credits.
+A sender may only transmit if it has enough credits.
+
+if credits >= cells_required:
+    transmit()
+    credits -= cells_required
+else:
+    wait_for_credit()
+
+Receivers return credits as buffers drain.
+This prevents unbounded queues and helps maintain deterministic behavior.
+17. Ordering Model
+Tachyon needs a clear ordering model.
+Initial model:
+Cells are ordered within a virtual channel.
+Different virtual channels are independent.
+FENCE enforces ordering across selected channels.
+Posted writes may complete before later reads unless fenced.
+Reliable ordered mode guarantees in-order delivery or explicit failure.
+This is closer to PCIe-style thinking than UDP/TCP thinking.
+18. Virtual Channels
+Tachyon supports multiple virtual channels.
+Example:
+VC
+Purpose
+Reliability
+0
+link control
+R4
+1
+DMA control
+R3
+2
+bulk tensor data
+R2
+3
+video/stream data
+R1
+4
+telemetry
+R0/R1
+5
+storage traffic
+R3
+Virtual channels allow latency-sensitive control traffic to avoid being blocked by bulk data.
+19. Host Integration
+19.1 Early Prototype
+Early versions can run over existing hardware:
+
+userspace runtime -> UDP/raw Ethernet -> prototype link
+
+This is not the final architecture, but it lets us build:
+simulator;
+transaction model;
+scheduler;
+formal cell format;
+telemetry;
+benchmarks.
+19.2 FPGA Prototype
+Later:
+
+Host PCIe slot
+    |
+FPGA Tachyon adapter
+    |
+custom deterministic radio link
+    |
+remote FPGA/device adapter
+
+The FPGA should expose:
+PCIe endpoint;
+DMA engine;
+BAR regions;
+interrupt support;
+Tachyon link controller.
+19.3 Long-Term Host Model
+The host should see a device-like endpoint, not a normal network socket.
+Possible presentations:
+custom Tachyon accelerator device;
+PCIe endpoint bridge;
+NVMe-like device profile;
+CXL-like memory-extension profile, later;
+userspace runtime API for early dev.
+20. Device Profiles
+20.1 tachyon-stream
+For high-throughput one-way or bidirectional streams.
+Examples:
+cameras;
+sensors;
+video;
+tensor streaming.
+20.2 tachyon-dma
+For explicit memory movement.
+Operations:
+submit DMA descriptor;
+read remote buffer;
+write remote buffer;
+signal completion.
+20.3 tachyon-accel
+For GPU/FPGA/ASIC-style compute offload.
+Operations:
+allocate remote buffer;
+upload kernel/model;
+submit command queue;
+doorbell;
+wait completion;
+fetch result.
+20.4 tachyon-storage
+For storage-like devices.
+Operations:
+block read;
+block write;
+flush;
+trim;
+queue submission;
+completion queue.
+20.5 tachyon-memext
+Experimental.
+Operations:
+page fetch;
+page eviction;
+prefetch hint;
+remote memory read;
+remote memory write;
+consistency fences.
+This profile must not claim transparent DDR-like latency.
+21. Security Model
+Tachyon should not repeat the mistake of assuming short-range means safe.
+21.1 Pairing
+Devices pair using an explicit physical or authenticated process:
+QR code;
+NFC tap;
+USB-C provisioning;
+physical button;
+manufacturer certificate;
+local admin approval.
+21.2 Control Plane Security
+Control messages must be authenticated.
+Required:
+device identity;
+session keys;
+replay protection;
+signed firmware metadata;
+capability authorization.
+21.3 Data Plane Security
+Data encryption should be mode-dependent.
+Modes:
+Mode
+Description
+plain
+lab-only, no encryption
+auth
+authenticated but not encrypted
+encrypted
+inline hardware encryption
+isolated
+dedicated directional link plus encryption
+For real products, inline hardware encryption is preferred.
+22. Formal Specification Strategy
+This project should be specification-first.
+The fast path should be modeled as a state machine.
+22.1 Formal Objects
+Define formal models for:
+cell format;
+opcode validity;
+sequence numbers;
+credit accounting;
+retry windows;
+lane reorder windows;
+virtual-channel isolation;
+ordering rules;
+reset behavior;
+error transitions.
+22.2 Invariants
+Examples:
+
+No data cell may be sent without sufficient credits.
+
+A reliable ordered channel must either deliver cells in order or report failure.
+
+A retried cell must not be delivered twice to the transaction layer.
+
+A fenced transaction must not pass earlier incomplete transactions in the same ordering domain.
+
+Control cells must remain valid during data-lane degradation.
+
+22.3 Fast Path Contract
+Before deterministic mode starts, both sides agree on:
+protocol version;
+enabled opcodes;
+cell sizes;
+maximum payload;
+reliability mode per VC;
+lane count;
+lane rate;
+retry limit;
+reorder window;
+encryption mode;
+clock mode;
+device profile.
+After that, the fast path should not need dynamic interpretation.
+23. Simulation Plan
+Before touching RF hardware, build tachyon-sim.
+The simulator should model:
+bandwidth;
+latency;
+jitter;
+bit error rate;
+packet/cell loss;
+lane skew;
+beam interruption;
+retry cost;
+FEC cost;
+serialization delay;
+queue depth;
+credit starvation;
+clock drift.
+23.1 Example Simulated Link
+
+link:
+  name: desk-dock-60ghz
+  distance_m: 0.5
+  lanes: 4
+  lane_rate_gbps: 25
+  base_latency_ns: 500
+  jitter_ns: 100
+  ber: 1e-9
+  slot_ns: 256
+  retry_window_cells: 64
+  fec: false
+
+23.2 Workloads
+Simulate:
+AI tensor transfer;
+NVMe-like random read;
+GPU command queue;
+video stream;
+memory page prefetch;
+link obstruction;
+lane failure;
+retry storm;
+thermal throttling.
+24. Repository Structure
+Suggested repo:
+
+tpt-tachyon/
+  README.md
+  SPEC.md
+  ROADMAP.md
+  LICENSE
+
+  crates/
+    tachyon-core/
+      src/
+        cell.rs
+        opcode.rs
+        error.rs
+        version.rs
+
+    tachyon-link/
+      src/
+        scheduler.rs
+        lane.rs
+        retry.rs
+        crc.rs
+        credit.rs
+        ordering.rs
+
+    tachyon-transaction/
+      src/
+        read.rs
+        write.rs
+        dma.rs
+        fence.rs
+        stream.rs
+
+    tachyon-sim/
+      src/
+        channel.rs
+        phy.rs
+        workload.rs
+        metrics.rs
+
+    tachyon-profile-accel/
+      src/
+        queue.rs
+        buffer.rs
+        command.rs
+
+    tachyon-profile-storage/
+      src/
+        block.rs
+        queue.rs
+
+  tools/
+    tachyonctl/
+    tachyon-bench/
+    tachyon-trace/
+
+  formal/
+    state_machine/
+    invariants/
+    cell_schema/
+
+  docs/
+    architecture.md
+    latency-budget.md
+    reliability-modes.md
+    lane-bonding.md
+    host-integration.md
+
+Rust is a good fit for the simulator, link model, control plane, and reference implementation. Hardware-facing pieces would eventually move to FPGA HDL or ASIC RTL.
+25. CLI Concept
+
+tachyonctl discover
+tachyonctl pair device-01
+tachyonctl train --mode directional
+tachyonctl link status
+tachyonctl link lanes
+tachyonctl bench latency
+tachyonctl bench throughput
+tachyonctl trace --vc 2
+tachyonctl profile accel attach
+
+Example output:
+
+Tachyon Link: active
+Mode: deterministic
+Distance estimate: 0.42 m
+Active lanes: 4 / 4
+Aggregate rate: 92.4 Gbps
+Median latency: 3.8 µs
+P99 latency: 7.1 µs
+Retry rate: 0.0003%
+Reliability: R2
+Clock drift: 14 ppm
+
+26. Latency Budget
+A first-class design requirement is that every implementation publishes a latency budget.
+Example:
+
+queue wait              200 ns
+slot wait               300 ns
+serialization           100 ns
+propagation               2 ns
+PHY processing          800 ns
+MAC processing          300 ns
+CRC / retry logic       200 ns
+reorder buffer          100 ns
+--------------------------------
+total                  2002 ns
+
+For commodity Wi-Fi-like systems, this will be much higher.
+The point is not to fake the numbers. The point is to know where every nanosecond goes.
+27. How This Could Beat 802.11ay
+Tachyon should not try to beat 802.11ay at being general Wi-Fi.
+It should beat it at being a wireless hardware interconnect.
+802.11ay Optimizes For
+WLAN compatibility;
+multiple clients;
+general packets;
+regulatory coexistence;
+network-layer flexibility;
+reasonable latency.
+Tachyon Optimizes For
+known paired devices;
+directional short-range links;
+fixed binary cells;
+scheduled access;
+hardware parsing;
+bounded retries;
+lane bonding;
+DMA/PCIe-like semantics;
+deterministic behavior.
+So the advantage comes from specialization.
+28. Regulatory / Hardware Reality
+This matters especially for a real product.
+Tachyon must respect RF rules in New Zealand and other markets.
+Potentially relevant constraints:
+allowed frequency bands;
+transmit power limits;
+EIRP limits;
+indoor/outdoor restrictions;
+experimental spectrum licensing;
+electromagnetic compatibility;
+safety limits;
+certification requirements.
+Practical early path:
+simulation;
+wired prototype;
+certified 60 GHz module;
+FPGA MAC prototype;
+experimental PHY work only when justified.
+29. Roadmap
+Phase 0 — Specification and Simulator
+Deliverables:
+SPEC.txt;
+binary cell format;
+opcode model;
+reliability modes;
+scheduler simulation;
+lane bonding simulation;
+benchmark traces;
+latency dashboard.
+Success criteria:
+simulate 4-lane deterministic link;
+inject loss/jitter;
+prove ordering and credit invariants;
+compare R0/R1/R2/R3 modes.
+Phase 1 — Software Prototype
+Deliverables:
+userspace daemon;
+virtual Tachyon link over Ethernet/UDP/raw transport;
+tachyonctl;
+stream and DMA profiles;
+trace format.
+Success criteria:
+stable virtual link;
+reproducible benchmarks;
+remote buffer read/write;
+simulated device attachment.
+Phase 2 — Hardware-Adjacent Prototype
+Deliverables:
+FPGA-friendly link layer;
+fixed cell parser;
+credit engine;
+retry engine;
+hardware timestamping;
+deterministic scheduler.
+Success criteria:
+link layer runs in FPGA simulation;
+bounded latency under load;
+lane failure recovery;
+no host network stack in fast path.
+Phase 3 — Wireless PHY Prototype
+Deliverables:
+60 GHz or optical test link;
+directional antennas;
+beam training;
+lane measurement;
+real latency metrics.
+Success criteria:
+measurable improvement over normal wireless networking for fixed transactions;
+stable operation at short range;
+documented obstruction behavior.
+Phase 4 — Accelerator Dock Profile
+Deliverables:
+remote command queue;
+DMA buffer movement;
+device doorbells;
+completion interrupts;
+runtime integration.
+Success criteria:
+offload simple compute workload;
+transfer tensors or buffers;
+demonstrate practical benefit over normal network RPC.
+Phase 5 — Custom Interconnect Research
+Deliverables:
+sub-THz / optical experiments;
+sub-microsecond link tests;
+CXL-like transaction exploration;
+memory-extension research profile.
+30. Main Risks
+Risk 1: PHY Hardware Is Hard
+The protocol can be elegant, but RF hardware is difficult.
+Mitigation:
+simulate first;
+use certified modules first;
+keep PHY abstraction clean.
+Risk 2: Latency Claims Become Unrealistic
+Mitigation:
+publish latency budgets;
+separate simulator, prototype, and ASIC targets;
+never claim wireless DDR equivalence prematurely.
+Risk 3: Reliability Modes Become Too Complex
+Mitigation:
+start with R1 and R3;
+add R2 after scheduler is stable;
+keep control channel simple.
+Risk 4: PCIe/GPU Integration Is Difficult
+Consumer GPUs are not designed to appear behind arbitrary wireless fabrics.
+Mitigation:
+start with FPGA/accelerator profile;
+use explicit runtime offload first;
+pursue PCIe bridge later.
+Risk 5: Regulatory Limits
+Mitigation:
+stay within approved bands initially;
+treat sub-THz as lab research;
+design protocol independently of illegal power assumptions.
+31. Initial MVP Definition
+The first useful MVP should be:
+A Rust-based deterministic Tachyon simulator and userspace reference implementation that can move DMA-like transactions over a simulated multi-lane wireless link with measurable latency, loss, retry, and ordering behavior.
+MVP components:
+tachyon-core
+tachyon-link
+tachyon-transaction
+tachyon-sim
+tachyonctl
+tachyon-bench
+MVP demo:
+
+tachyon-sim run configs/four-lane-dock.yaml
+tachyon-bench dma --size 256MB --reliability R2
+tachyon-bench latency --payload 256B --duration 60s
+tachyonctl trace --show-retries
+
+Expected output:
+
+Workload: DMA read/write
+Payload: 256 MB
+Lanes: 4
+Cell size: 256 B
+Reliability: R2
+Median latency: 4.2 µs
+P99 latency: 9.8 µs
+Throughput: 71.3 Gbps
+Retries: 0.002%
+Ordering violations: 0
+Credit stalls: 14
+
+32. Project Positioning
+A good public description would be:
+Tachyon is an experimental deterministic wireless interconnect for local hardware-class communication. It explores whether short-range, directional, multi-lane wireless links can behave less like networks and more like cables.
+Shorter tagline:
+A wireless fabric for hardware that wants to feel local.
+Or:
+Not faster Wi-Fi. A wireless wire.
+33. Recommended First Files
+Start with these:
+
+README.md
+SPEC.txt
+ROADMAP.md
+crates/tachyon-core/src/cell.rs
+crates/tachyon-core/src/opcode.rs
+crates/tachyon-link/src/credit.rs
+crates/tachyon-link/src/scheduler.rs
+crates/tachyon-sim/src/channel.rs
+configs/four-lane-dock.yaml
+
+The first technical decision to lock in is:
+Tachyon v0 uses fixed-size binary cells, credit-based flow control, virtual channels, and simulated lane bonding.
+Everything else can evolve from there.
+34. Final Design Statement
+tpt-tachyon should not begin as “wireless RAM” or “Wi-Fi 8”.
+It should begin as a formal deterministic link protocol for local hardware transactions.
+The winning path is:
+
+formal cells
+    -> simulator
+    -> software prototype
+    -> FPGA link controller
+    -> directional wireless PHY
+    -> accelerator/storage profiles
+    -> deeper PCIe/CXL-like integration
+

@@ -1,0 +1,36 @@
+# Rust / Cargo
+/target/
+**/target/
+**/*.rs.bk
+*.pdb
+# Cargo.lock is committed for binaries/tools; uncomment for library-only workspaces
+# Cargo.lock
+
+# Build / sim / bench output
+/out/
+/build/
+/dist/
+*.log
+*.vcd
+*.fst
+*.pcap
+*.trace
+
+# Editors / IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Env / secrets
+.env
+.env.*
+
+# Claude Code local settings
+.claude/settings.local.json
